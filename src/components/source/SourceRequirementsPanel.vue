@@ -44,7 +44,6 @@ const documents = ref<SourceDocument[]>([]);
 const items = ref<SourceRequirement[]>([]);
 const communications = ref<Communication[]>([]);
 const selectedDocumentId = ref("all");
-const selectionInitialized = ref(false);
 const loading = ref(false);
 const error = ref("");
 
@@ -62,7 +61,6 @@ onMounted(load);
 watch(
   () => props.project.id,
   () => {
-    selectionInitialized.value = false;
     selectedDocumentId.value = "all";
     load();
   },
@@ -80,10 +78,6 @@ async function load() {
     documents.value = documentItems;
     items.value = sourceItems;
     communications.value = communicationItems;
-    if (!selectionInitialized.value && documentItems.length > 0) {
-      selectedDocumentId.value = documentItems[0].id;
-      selectionInitialized.value = true;
-    }
     if (
       selectedDocumentId.value !== "all" &&
       !documentItems.some(
@@ -210,13 +204,11 @@ function openCommunication(item: SourceRequirement) {
 
 function onImported() {
   importOpen.value = false;
-  selectionInitialized.value = false;
   load();
 }
 
 function onManualSaved() {
   manualOpen.value = false;
-  selectionInitialized.value = false;
   load();
 }
 
@@ -340,7 +332,11 @@ function onRefined() {
         v-if="filteredItems.length === 0"
         class="rounded-xl border border-dashed border-border p-8 text-center text-sm text-muted-foreground"
       >
-        这个来源文件下没有原始需求。
+        {{
+          selectedDocumentId === "all"
+            ? "还没有原始需求。"
+            : "这个来源文件下没有原始需求。"
+        }}
       </div>
 
       <div v-else class="space-y-4">
