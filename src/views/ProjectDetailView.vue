@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
+import { onMounted, ref, watch } from "vue";
 import { RouterLink, useRoute } from "vue-router";
 import { ArrowLeft } from "@lucide/vue";
 import CommunicationsPanel from "@/components/communications/CommunicationsPanel.vue";
@@ -28,6 +28,20 @@ const activeTab = ref<
     requestedTab === "overview"
     ? requestedTab
     : "source",
+);
+
+watch(
+  () => route.query.tab,
+  (tab) => {
+    if (
+      tab === "communications" ||
+      tab === "requirements" ||
+      tab === "source" ||
+      tab === "overview"
+    ) {
+      activeTab.value = tab;
+    }
+  },
 );
 
 onMounted(load);

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from "vue";
+import { computed, ref, watch } from "vue";
 import {
   FolderKanban,
   LayoutDashboard,
@@ -8,14 +8,93 @@ import {
   Settings,
   Users,
 } from "@lucide/vue";
-import { RouterLink, RouterView, useRoute } from "vue-router";
+import { onClickOutside, refDebounced } from "@vueuse/core";
+import { RouterLink, RouterView, useRoute, useRouter } from "vue-router";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { globalSearch, type GlobalSearchResult } from "@/db/search";
 import { useAppStore } from "@/stores/app";
 
 const appStore = useAppStore();
 const route = useRoute();
+const router = useRouter();
 const search = ref("");
+const searchTerm = refDebounced(search, 200);
+const results = ref<GlobalSearchResult[]>([]);
+const searching = ref(false);
+const searchOpen = ref(false);
+const searchBox = ref<HTMLElement | null>(null);
+let searchSeq = 0;
+
+watch(searchTerm, async (term) => {
+  const seq = ++searchSeq;
+  if (!term.trim()) {
+    results.value = [];
+    searching.value = false;
+    return;
+  }
+  searching.value = true;
+  try {
+    const items = await globalSearch(term);
+    if (seq !== searchSeq) return;
+    results.value = items;
+    searchOpen.value = true;
+  } catch {
+    if (seq === searchSeq) results.value = [];
+  } finally {
+    if (seq === searchSeq) searching.value = false;
+  }
+});
+
+watch(search, (value) => {
+  if (!value.trim()) {
+    results.value = [];
+    searchOpen.value = false;
+  }
+});
+
+watch(
+  () => route.fullPath,
+  () => {
+    search.value = "";
+    searchOpen.value = false;
+  },
+);
+
+onClickOutside(searchBox, () => {
+  searchOpen.value = false;
+});
+
+const searchGroups = computed(() =>
+  (
+    [
+      { kind: "project", label: "项目" },
+      { kind: "requirement", label: "开发需求" },
+      { kind: "sourceRequirement", label: "原始需求" },
+      { kind: "communication", label: "沟通记录" },
+    ] as const
+  )
+    .map((group) => ({
+      ...group,
+      items: results.value.filter((item) => item.kind === group.kind),
+    }))
+    .filter((group) => group.items.length > 0),
+);
+
+function openResult(result: GlobalSearchResult) {
+  const base = `/projects/${result.projectId}`;
+  searchOpen.value = false;
+  search.value = "";
+  if (result.kind === "project") {
+    router.push(base);
+  } else if (result.kind === "requirement") {
+    router.push(`${base}?tab=requirements`);
+  } else if (result.kind === "sourceRequirement") {
+    router.push(`${base}?tab=source`);
+  } else {
+    router.push(`${base}/communications/${result.id}`);
+  }
+}
 
 const navigation = [
   { to: "/", label: "工作台", icon: LayoutDashboard },
@@ -86,16 +165,59 @@ function isActive(to: string) {
           <PanelLeft class="size-4" />
         </Button>
 
-        <div class="relative w-full max-w-md">
+        <div ref="searchBox" class="relative w-full max-w-md">
           <Search
             class="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
           />
           <Input
             v-model="search"
             type="search"
-            placeholder="搜索项目、需求编号…"
+            placeholder="搜索项目、需求编号、沟通主题…"
             class="pl-9"
+            @focus="searchOpen = search.trim() !== ''"
+            @keydown.esc="searchOpen = false"
           />
+          <div
+            v-if="searchOpen && search.trim()"
+            class="absolute inset-x-0 top-full z-20 mt-2 max-h-[26rem] overflow-y-auto rounded-lg border border-border bg-card p-1.5 shadow-lg"
+          >
+            <p
+              v-if="searching && results.length === 0"
+              class="px-3 py-2 text-xs text-muted-foreground"
+            >
+              搜索中…
+            </p>
+            <template v-else-if="searchGroups.length > 0">
+              <div v-for="group in searchGroups" :key="group.kind">
+                <p
+                  class="px-3 pb-1 pt-2 text-[0.7rem] font-medium text-muted-foreground"
+                >
+                  {{ group.label }}
+                </p>
+                <button
+                  v-for="item in group.items"
+                  :key="`${item.kind}-${item.id}`"
+                  type="button"
+                  class="flex w-full flex-col items-start rounded-md px-3 py-2 text-left hover:bg-muted/60"
+                  @click="openResult(item)"
+                >
+                  <span class="w-full truncate text-sm">{{ item.title }}</span>
+                  <span
+                    class="w-full truncate text-xs text-muted-foreground"
+                  >
+                    {{ item.code ? `${item.code} · ` : ""
+                    }}{{ item.projectName }}
+                  </span>
+                </button>
+              </div>
+            </template>
+            <p
+              v-else-if="!searching && searchTerm.trim()"
+              class="px-3 py-2 text-xs text-muted-foreground"
+            >
+              没有匹配结果
+            </p>
+          </div>
         </div>
       </header>
 

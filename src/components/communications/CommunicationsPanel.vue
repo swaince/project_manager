@@ -103,7 +103,9 @@ const filteredItems = computed(() => {
     const sessionText = communication.sessions
       .map(
         (session) =>
-          `${session.participants} ${session.summary} ${session.decisions} ${session.followUps}`,
+          `${session.participants} ${session.summary} ${session.decisions} ${session.followUps} ${session.todos
+            .map((todo) => todo.content)
+            .join(" ")}`,
       )
       .join(" ");
     const requirementText = [
