@@ -1,0 +1,19 @@
+/**
+ * 项目自定义主题。
+ *
+ * shadcn-vue 的默认主题变量由 CLI 生成在 tailwind.css 中，
+ * 这里只放项目自己的覆盖和扩展，避免与 CLI 生成内容混在一起。
+ */
+:root {
+  --app-sidebar-width: 15rem;
+  --app-header-height: 3.5rem;
+}
+
+.dark {
+  /* 深色模式下的自定义主题覆盖写在这里。 */
+}
+
+@theme inline {
+  --spacing-app-sidebar: var(--app-sidebar-width);
+  --spacing-app-header: var(--app-header-height);
+}
