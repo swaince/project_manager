@@ -164,6 +164,12 @@ fn attachment_mime(file_name: &str) -> &'static str {
         "pptx" => "application/vnd.openxmlformats-officedocument.presentationml.presentation",
         "txt" => "text/plain",
         "csv" => "text/csv",
+        "m4a" => "audio/mp4",
+        "mp3" => "audio/mpeg",
+        "wav" => "audio/wav",
+        "webm" => "audio/webm",
+        "ogg" => "audio/ogg",
+        "aac" => "audio/aac",
         "zip" => "application/zip",
         _ => "application/octet-stream",
     }
@@ -283,8 +289,8 @@ fn save_attachment_bytes(
     let bytes = STANDARD
         .decode(data_base64.as_bytes())
         .map_err(|error| format!("附件数据解析失败：{error}"))?;
-    if bytes.len() > 20 * 1024 * 1024 {
-        return Err("粘贴的图片不能超过 20MB".to_string());
+    if bytes.len() > 100 * 1024 * 1024 {
+        return Err("附件不能超过 100MB".to_string());
     }
     let file_name = sanitize_attachment_name(&file_name);
     let directory = attachment_directory(&app, &project_id, &communication_id)?;
@@ -851,6 +857,12 @@ fn migrations() -> Vec<Migration> {
             version: 49,
             description: "index_communication_attachments_communication",
             sql: "CREATE INDEX IF NOT EXISTS idx_communication_attachments_communication ON communication_attachments(communication_id, session_id)",
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 50,
+            description: "add_communication_session_todos",
+            sql: "ALTER TABLE communication_sessions ADD COLUMN todos TEXT NOT NULL DEFAULT '[]'",
             kind: MigrationKind::Up,
         },
     ]

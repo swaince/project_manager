@@ -7,10 +7,14 @@ import {
   type SourceRequirement,
 } from "@/types/models";
 
-defineProps<{
-  open: boolean;
-  requirement: SourceRequirement | null;
-}>();
+withDefaults(
+  defineProps<{
+    open: boolean;
+    requirement: SourceRequirement | null;
+    communicationCount?: number;
+  }>(),
+  { communicationCount: 0 },
+);
 
 const emit = defineEmits<{
   close: [];
@@ -91,7 +95,9 @@ const emit = defineEmits<{
 
     <template #footer>
       <Button variant="outline" @click="emit('close')">关闭</Button>
-      <Button variant="outline" @click="emit('communicate')">新建沟通记录</Button>
+      <Button variant="outline" @click="emit('communicate')">
+        {{ communicationCount > 0 ? "继续沟通" : "新建沟通记录" }}
+      </Button>
       <Button @click="emit('refine')">细化开发需求</Button>
     </template>
   </AppDialog>

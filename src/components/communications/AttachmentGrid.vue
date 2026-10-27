@@ -30,6 +30,7 @@ const props = withDefaults(
 const emit = defineEmits<{
   remove: [attachment: CommunicationAttachment];
   preview: [attachment: CommunicationAttachment];
+  error: [message: string];
 }>();
 
 const previews = reactive<Record<string, string>>({});
@@ -99,7 +100,12 @@ function preview(attachment: CommunicationAttachment) {
 
 function open(attachment: CommunicationAttachment) {
   if (!attachment.filePath) return;
-  void openAttachment(attachment.filePath);
+  openAttachment(attachment.filePath).catch((cause) => {
+    emit(
+      "error",
+      `无法打开附件：${cause instanceof Error ? cause.message : String(cause)}`,
+    );
+  });
 }
 </script>
 

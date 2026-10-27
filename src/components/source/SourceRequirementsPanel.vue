@@ -4,6 +4,7 @@ import { useRouter } from "vue-router";
 import {
   FileSpreadsheet,
   Lock,
+  MessageSquare,
   MessageSquarePlus,
   Plus,
   Upload,
@@ -21,15 +22,16 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { createCommunicationDraft } from "@/db/communications";
+import { createCommunicationDraft, listCommunications } from "@/db/communications";
 import {
   listSourceDocuments,
   listSourceRequirements,
 } from "@/db/sourceRequirements";
-import { formatDateTime } from "@/lib/dates";
+import { formatDateOnly, formatDateTime } from "@/lib/dates";
 import { requirementStatusClass } from "@/lib/ui";
 import {
   getRequirementStatusLabel,
+  type Communication,
   type Project,
   type SourceDocument,
   type SourceRequirement,
@@ -40,6 +42,7 @@ const router = useRouter();
 
 const documents = ref<SourceDocument[]>([]);
 const items = ref<SourceRequirement[]>([]);
+const communications = ref<Communication[]>([]);
 const selectedDocumentId = ref("all");
 const selectionInitialized = ref(false);
 const loading = ref(false);
@@ -69,12 +72,14 @@ async function load() {
   error.value = "";
   loading.value = true;
   try {
-    const [documentItems, sourceItems] = await Promise.all([
+    const [documentItems, sourceItems, communicationItems] = await Promise.all([
       listSourceDocuments(props.project.id),
       listSourceRequirements(props.project.id),
+      listCommunications(props.project.id),
     ]);
     documents.value = documentItems;
     items.value = sourceItems;
+    communications.value = communicationItems;
     if (!selectionInitialized.value && documentItems.length > 0) {
       selectedDocumentId.value = documentItems[0].id;
       selectionInitialized.value = true;
@@ -131,6 +136,37 @@ const stats = computed(() => {
   return { total, covered, uncovered: total - covered };
 });
 
+const communicationsBySource = computed(() => {
+  const map = new Map<string, Communication[]>();
+  for (const communication of communications.value) {
+    if (communication.status === "archived") continue;
+    for (const link of communication.sourceRequirements) {
+      const list = map.get(link.id) ?? [];
+      list.push(communication);
+      map.set(link.id, list);
+    }
+  }
+  return map;
+});
+
+function existingCommunications(item: SourceRequirement): Communication[] {
+  return communicationsBySource.value.get(item.id) ?? [];
+}
+
+const expandedSourceIds = ref<string[]>([]);
+
+function toggleCommunications(item: SourceRequirement) {
+  expandedSourceIds.value = expandedSourceIds.value.includes(item.id)
+    ? expandedSourceIds.value.filter((value) => value !== item.id)
+    : [...expandedSourceIds.value, item.id];
+}
+
+function openCommunicationDetail(communication: Communication) {
+  void router.push(
+    `/projects/${props.project.id}/communications/${communication.id}`,
+  );
+}
+
 function openDetail(item: SourceRequirement) {
   detailItem.value = item;
   detailOpen.value = true;
@@ -147,6 +183,13 @@ function openRefine(item: SourceRequirement) {
 function openCommunication(item: SourceRequirement) {
   if (communicationBusy.value) return;
   detailOpen.value = false;
+  const existing = existingCommunications(item)[0];
+  if (existing) {
+    void router.push(
+      `/projects/${props.project.id}/communications/${existing.id}`,
+    );
+    return;
+  }
   communicationBusy.value = true;
   void createCommunicationDraft(props.project.id, {
     title: `关于「${item.title}」的沟通`,
@@ -345,6 +388,15 @@ function onRefined() {
                     >
                       未细化
                     </span>
+                    <button
+                      v-if="existingCommunications(item).length > 0"
+                      type="button"
+                      class="rounded-full bg-sky-100 px-2 py-0.5 text-xs font-medium text-sky-800 hover:bg-sky-200 dark:bg-sky-900/30 dark:text-sky-300 dark:hover:bg-sky-900/50"
+                      @click="toggleCommunications(item)"
+                    >
+                      已沟通 {{ existingCommunications(item).length }} 次 ·
+                      {{ expandedSourceIds.includes(item.id) ? "收起" : "查看" }}
+                    </button>
                   </div>
                   <button
                     class="mt-1 block max-w-full truncate text-left text-sm font-medium hover:underline"
@@ -367,8 +419,16 @@ function onRefined() {
                     :disabled="communicationBusy"
                     @click="openCommunication(item)"
                   >
-                    <MessageSquarePlus class="size-3.5" />
-                    新建沟通记录
+                    <MessageSquare
+                      v-if="existingCommunications(item).length > 0"
+                      class="size-3.5"
+                    />
+                    <MessageSquarePlus v-else class="size-3.5" />
+                    {{
+                      existingCommunications(item).length > 0
+                        ? "继续沟通"
+                        : "新建沟通记录"
+                    }}
                   </Button>
                   <Button variant="outline" size="sm" @click="openRefine(item)">
                     细化
@@ -395,6 +455,48 @@ function onRefined() {
                   </span>
                 </Badge>
               </div>
+
+              <div
+                v-if="expandedSourceIds.includes(item.id)"
+                class="mt-3 space-y-3 rounded-lg border border-border bg-muted/20 p-3"
+              >
+                <div
+                  v-for="communication in existingCommunications(item)"
+                  :key="communication.id"
+                >
+                  <div class="flex flex-wrap items-center gap-2">
+                    <button
+                      class="text-sm font-medium hover:underline"
+                      @click="openCommunicationDetail(communication)"
+                    >
+                      {{ communication.title }}
+                    </button>
+                    <span class="text-xs text-muted-foreground">
+                      {{ communication.sessions.length }} 场 · 更新于
+                      {{ formatDateTime(communication.updatedAt) }}
+                    </span>
+                  </div>
+                  <ul class="mt-1 space-y-1">
+                    <li
+                      v-for="(session, index) in communication.sessions"
+                      :key="session.id"
+                      class="line-clamp-2 text-xs text-muted-foreground"
+                    >
+                      第 {{ index + 1 }} 场 ·
+                      {{ formatDateOnly(session.occurredAt) }}
+                      <template v-if="session.decisions">
+                        · 结论：{{ session.decisions }}
+                      </template>
+                      <template v-if="session.followUps">
+                        · 待办：{{ session.followUps }}
+                      </template>
+                      <template v-if="!session.decisions && !session.followUps">
+                        · {{ session.summary || "（未填写摘要）" }}
+                      </template>
+                    </li>
+                  </ul>
+                </div>
+              </div>
             </article>
           </div>
         </section>
@@ -418,6 +520,9 @@ function onRefined() {
     <SourceRequirementDetailDialog
       :open="detailOpen"
       :requirement="detailItem"
+      :communication-count="
+        detailItem ? existingCommunications(detailItem).length : 0
+      "
       @close="detailOpen = false"
       @communicate="detailItem && openCommunication(detailItem)"
       @refine="detailItem && openRefine(detailItem)"

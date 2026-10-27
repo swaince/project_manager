@@ -11,6 +11,7 @@ import type {
   CommunicationRequirement,
   CommunicationSession,
   CommunicationSessionInput,
+  CommunicationSessionTodo,
   CommunicationStatus,
   SourceRequirementLink,
 } from "@/types/models";
@@ -35,6 +36,7 @@ interface SessionRow {
   summary: string;
   decisions: string;
   follow_ups: string;
+  todos: string;
   sort_order: number;
   created_at: string;
   updated_at: string;
@@ -72,6 +74,20 @@ type Database = Awaited<ReturnType<typeof getDatabase>>;
 const SELECT_COMMUNICATIONS =
   "SELECT id, project_id, title, status, completed_at, archived_at, created_at, updated_at FROM communications";
 
+function parseSessionTodos(raw: string | null): CommunicationSessionTodo[] {
+  try {
+    const value = JSON.parse(raw || "[]");
+    return Array.isArray(value)
+      ? value.filter(
+          (item) =>
+            typeof item?.id === "string" && typeof item?.content === "string",
+        )
+      : [];
+  } catch {
+    return [];
+  }
+}
+
 function mapSession(row: SessionRow): CommunicationSession {
   return {
     id: row.id,
@@ -82,6 +98,7 @@ function mapSession(row: SessionRow): CommunicationSession {
     summary: row.summary,
     decisions: row.decisions,
     followUps: row.follow_ups,
+    todos: parseSessionTodos(row.todos),
     sortOrder: row.sort_order,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -454,11 +471,19 @@ export async function updateCommunicationSession(
   );
   if (!rows[0]) throw new Error("沟通场次不存在");
   const now = nowIso();
+  const todos = (input.todos ?? [])
+    .map((todo) => ({
+      id: todo.id,
+      content: todo.content.trim(),
+      done: Boolean(todo.done),
+      requirementId: todo.requirementId,
+    }))
+    .filter((todo) => todo.content);
 
   await db.execute(
     `UPDATE communication_sessions
      SET occurred_at = ?, channel = ?, participants = ?, summary = ?,
-         decisions = ?, follow_ups = ?, updated_at = ?
+         decisions = ?, follow_ups = ?, todos = ?, updated_at = ?
      WHERE id = ?`,
     [
       input.occurredAt,
@@ -467,6 +492,7 @@ export async function updateCommunicationSession(
       input.summary.trim(),
       input.decisions.trim(),
       input.followUps.trim(),
+      JSON.stringify(todos),
       now,
       sessionId,
     ],

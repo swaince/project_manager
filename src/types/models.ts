@@ -424,9 +424,17 @@ export interface CommunicationSession {
   summary: string;
   decisions: string;
   followUps: string;
+  todos: CommunicationSessionTodo[];
   sortOrder: number;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface CommunicationSessionTodo {
+  id: string;
+  content: string;
+  done: boolean;
+  requirementId: string | null;
 }
 
 export interface CommunicationSessionInput {
@@ -436,6 +444,7 @@ export interface CommunicationSessionInput {
   summary: string;
   decisions: string;
   followUps: string;
+  todos: CommunicationSessionTodo[];
 }
 
 export interface CommunicationAttachment {

@@ -56,7 +56,7 @@ const props = defineProps<{
   presetDescription?: string;
 }>();
 
-const emit = defineEmits<{ close: []; saved: [] }>();
+const emit = defineEmits<{ close: []; saved: [requirement: Requirement] }>();
 
 interface RequirementFormState {
   title: string;
@@ -262,12 +262,10 @@ async function save() {
 
   saving.value = true;
   try {
-    if (props.requirement) {
-      await store.update(props.requirement.id, input);
-    } else {
-      await store.create(props.project.id, input);
-    }
-    emit("saved");
+    const saved = props.requirement
+      ? await store.update(props.requirement.id, input)
+      : await store.create(props.project.id, input);
+    emit("saved", saved);
     emit("close");
   } catch (cause) {
     formError.value = cause instanceof Error ? cause.message : String(cause);

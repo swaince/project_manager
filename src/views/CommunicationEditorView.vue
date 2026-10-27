@@ -14,8 +14,11 @@ import {
   ArrowLeft,
   CheckCircle2,
   MessageSquarePlus,
+  Mic,
   Plus,
   RotateCcw,
+  Square,
+  Trash2,
   Upload,
 } from "@lucide/vue";
 import type { UnlistenFn } from "@tauri-apps/api/event";
@@ -29,6 +32,7 @@ import FormField from "@/components/ui/FormField.vue";
 import RequirementSelect from "@/components/ui/RequirementSelect.vue";
 import SourceRequirementSelect from "@/components/ui/SourceRequirementSelect.vue";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -62,6 +66,7 @@ import {
   saveAttachmentBytes,
 } from "@/lib/attachments";
 import { formatDateOnly, formatDateTime, todayDateOnly } from "@/lib/dates";
+import { createId } from "@/lib/ids";
 import {
   communicationChannelClass,
   communicationStatusClass,
@@ -75,6 +80,7 @@ import {
   type CommunicationChannel,
   type CommunicationSession,
   type CommunicationSessionInput,
+  type CommunicationSessionTodo,
   type CommunicationStatus,
   type Project,
   type Requirement,
@@ -110,6 +116,7 @@ const sessionForm = reactive<CommunicationSessionInput>({
   summary: "",
   decisions: "",
   followUps: "",
+  todos: [],
 });
 
 const saving = ref(false);
@@ -122,6 +129,14 @@ const uploading = ref(0);
 const attachmentError = ref("");
 const dragActive = ref(false);
 
+const recording = ref(false);
+const recordSeconds = ref(0);
+let recorder: MediaRecorder | null = null;
+let recorderSessionId: string | null = null;
+let recorderMimeType = "";
+let recordChunks: Blob[] = [];
+let recordTimer: ReturnType<typeof setInterval> | null = null;
+
 const previewAttachment = ref<CommunicationAttachment | null>(null);
 const previewUrl = ref("");
 const previewLoading = ref(false);
@@ -130,6 +145,12 @@ const removeBusy = ref(false);
 const archiveOpen = ref(false);
 const archiveBusy = ref(false);
 const requirementOpen = ref(false);
+const requirementPresetTitle = ref("");
+const requirementPresetSourceIds = ref<string[]>([]);
+const todoDraft = ref("");
+const todoPendingRequirement = ref<CommunicationSessionTodo | null>(null);
+const completeConfirmOpen = ref(false);
+const completeBusy = ref(false);
 
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 let savingPromise: Promise<void> | null = null;
@@ -153,6 +174,15 @@ const linkedSourceRequirements = computed(() =>
     sourceRequirementIds.value.includes(source.id),
   ),
 );
+const unrefinedSources = computed(() =>
+  linkedSourceRequirements.value.filter(
+    (source) => source.linkedRequirements.length === 0,
+  ),
+);
+const completeWarning = computed(() => {
+  const codes = unrefinedSources.value.map((source) => source.code).join("、");
+  return `还有 ${unrefinedSources.value.length} 条关联原始需求尚未细化为开发需求：${codes}。可以先在原始需求页生成开发需求，或确认现在完成。`;
+});
 const saveLabel = computed(() => {
   if (saving.value) return "保存中…";
   if (saveError.value) return "保存失败";
@@ -166,6 +196,10 @@ const saveLabel = computed(() => {
   }
   return "尚未保存";
 });
+const recordElapsed = computed(
+  () =>
+    `${Math.floor(recordSeconds.value / 60)}:${String(recordSeconds.value % 60).padStart(2, "0")}`,
+);
 
 onMounted(async () => {
   await load();
@@ -180,6 +214,13 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   if (saveTimer) clearTimeout(saveTimer);
+  if (recordTimer) clearInterval(recordTimer);
+  if (recorder) {
+    recorder.onstop = null;
+    recorder.stream.getTracks().forEach((track) => track.stop());
+    recorder.stop();
+    recorder = null;
+  }
   window.removeEventListener("paste", handlePaste);
   window.removeEventListener("beforeunload", handleBeforeUnload);
   unlistenDrag?.();
@@ -267,6 +308,7 @@ function applySessionForm(session: CommunicationSession | null) {
     sessionForm.summary = session.summary;
     sessionForm.decisions = session.decisions;
     sessionForm.followUps = session.followUps;
+    sessionForm.todos = session.todos.map((todo) => ({ ...todo }));
   } else {
     sessionForm.occurredAt = todayDateOnly();
     sessionForm.channel = "meeting";
@@ -274,6 +316,7 @@ function applySessionForm(session: CommunicationSession | null) {
     sessionForm.summary = "";
     sessionForm.decisions = "";
     sessionForm.followUps = "";
+    sessionForm.todos = [];
   }
   nextTick(() => {
     hydrating.value = false;
@@ -397,6 +440,16 @@ async function addSession() {
 
 async function completeRecord() {
   if (!communication.value) return;
+  if (unrefinedSources.value.length > 0) {
+    completeConfirmOpen.value = true;
+    return;
+  }
+  await confirmCompleteRecord();
+}
+
+async function confirmCompleteRecord() {
+  if (!communication.value) return;
+  completeBusy.value = true;
   try {
     await flushSave();
     const updated = await completeCommunication(communication.value.id);
@@ -404,8 +457,11 @@ async function completeRecord() {
     communication.value.status = updated.status;
     communication.value.completedAt = updated.completedAt;
     savedAt.value = new Date();
+    completeConfirmOpen.value = false;
   } catch (cause) {
     saveError.value = cause instanceof Error ? cause.message : String(cause);
+  } finally {
+    completeBusy.value = false;
   }
 }
 
@@ -452,11 +508,53 @@ async function restoreRecord() {
   }
 }
 
-async function afterRequirementCreated() {
+function openRequirementDialog(todo?: CommunicationSessionTodo) {
+  todoPendingRequirement.value = todo ?? null;
+  requirementPresetTitle.value = todo?.content ?? "";
+  requirementPresetSourceIds.value = [...sourceRequirementIds.value];
+  requirementOpen.value = true;
+}
+
+function addTodo() {
+  const content = todoDraft.value.trim();
+  if (!content) return;
+  sessionForm.todos.push({
+    id: createId(),
+    content,
+    done: false,
+    requirementId: null,
+  });
+  todoDraft.value = "";
+}
+
+function removeTodo(index: number) {
+  sessionForm.todos.splice(index, 1);
+}
+
+function requirementCode(requirementId: string | null): string {
+  if (!requirementId) return "";
+  return (
+    requirementOptions.value.find((item) => item.id === requirementId)?.code ??
+    ""
+  );
+}
+
+async function afterRequirementCreated(created?: Requirement) {
   requirementOpen.value = false;
+  const todo = todoPendingRequirement.value;
+  todoPendingRequirement.value = null;
+  if (todo && created) {
+    todo.requirementId = created.id;
+  }
   if (!communication.value) return;
   try {
-    const refreshed = await getCommunication(communication.value.id);
+    const [refreshed, requirementItems, sourceItems] = await Promise.all([
+      getCommunication(communication.value.id),
+      listRequirements(props.projectId),
+      listSourceRequirements(props.projectId),
+    ]);
+    requirementOptions.value = requirementItems;
+    sourceRequirementOptions.value = sourceItems;
     if (!refreshed) return;
     communication.value.requirements = refreshed.requirements;
     requirementIds.value = refreshed.requirements.map((item) => item.id);
@@ -535,6 +633,96 @@ async function uploadPastedImage(file: File, sessionId: string | null) {
         mimeType: saved.mimeType,
         fileSize: saved.fileSize,
         source: "paste",
+      },
+    );
+    attachments.value.push(attachment);
+    savedAt.value = new Date();
+  } catch (cause) {
+    attachmentError.value =
+      cause instanceof Error ? cause.message : String(cause);
+  } finally {
+    uploading.value -= 1;
+  }
+}
+
+async function startRecording(sessionId: string | null) {
+  if (!communication.value || isArchived.value || recording.value) return;
+  attachmentError.value = "";
+  let stream: MediaStream | null = null;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const audioStream = stream;
+    recorderMimeType =
+      ["audio/mp4", "audio/webm;codecs=opus", "audio/webm"].find((type) =>
+        MediaRecorder.isTypeSupported(type),
+      ) ?? "";
+    recorder = new MediaRecorder(
+      audioStream,
+      recorderMimeType ? { mimeType: recorderMimeType } : undefined,
+    );
+    recordChunks = [];
+    recorderSessionId = sessionId;
+    recorder.ondataavailable = (event) => {
+      if (event.data.size > 0) recordChunks.push(event.data);
+    };
+    recorder.onstop = () => {
+      const type = recorderMimeType || "audio/webm";
+      const blob = new Blob(recordChunks, { type });
+      recordChunks = [];
+      audioStream.getTracks().forEach((track) => track.stop());
+      void saveRecording(blob, type);
+    };
+    recorder.start();
+    recordSeconds.value = 0;
+    recording.value = true;
+    recordTimer = setInterval(() => (recordSeconds.value += 1), 1000);
+  } catch (cause) {
+    stream?.getTracks().forEach((track) => track.stop());
+    attachmentError.value = `无法开始录音：${
+      cause instanceof Error ? cause.message : String(cause)
+    }`;
+  }
+}
+
+function stopRecording() {
+  if (!recorder) return;
+  if (recordTimer) clearInterval(recordTimer);
+  recordTimer = null;
+  recording.value = false;
+  // onstop 里保存，这里只负责收尾
+  recorder.stop();
+  recorder = null;
+}
+
+async function saveRecording(blob: Blob, mimeType: string) {
+  if (!communication.value) return;
+  const sessionId = recorderSessionId;
+  recorderSessionId = null;
+  attachmentError.value = "";
+  uploading.value += 1;
+  try {
+    const extension = mimeType.includes("mp4") ? "m4a" : "webm";
+    const fileName = `录音-${new Date()
+      .toISOString()
+      .replace(/[:.]/g, "-")}.${extension}`;
+    const dataBase64 = await readFileAsBase64(
+      new File([blob], fileName, { type: mimeType }),
+    );
+    const saved = await saveAttachmentBytes(
+      props.projectId,
+      communication.value.id,
+      fileName,
+      dataBase64,
+    );
+    const attachment = await addCommunicationAttachment(
+      communication.value.id,
+      {
+        sessionId,
+        fileName: saved.fileName,
+        filePath: saved.filePath,
+        mimeType: saved.mimeType,
+        fileSize: saved.fileSize,
+        source: "record",
       },
     );
     attachments.value.push(attachment);
@@ -724,7 +912,7 @@ async function confirmRemoveAttachment() {
             v-if="!isArchived"
             variant="ghost"
             size="sm"
-            @click="requirementOpen = true"
+            @click="openRequirementDialog()"
           >
             <MessageSquarePlus class="size-4" />
             新建开发需求
@@ -828,6 +1016,7 @@ async function confirmRemoveAttachment() {
             class="mt-3"
             @remove="requestRemoveAttachment"
             @preview="previewImage"
+            @error="attachmentError = $event"
           />
           <p
             v-if="themeAttachments.length === 0"
@@ -960,23 +1149,107 @@ async function confirmRemoveAttachment() {
               </FormField>
             </div>
 
+            <div class="rounded-lg border border-border p-3">
+              <div class="flex flex-wrap items-center justify-between gap-2">
+                <h3 class="text-sm font-semibold">待办事项</h3>
+                <span class="text-xs text-muted-foreground">
+                  勾选表示已完成；需要落成需求时直接生成。
+                </span>
+              </div>
+              <ul
+                v-if="sessionForm.todos.length > 0"
+                class="mt-2 space-y-1.5"
+              >
+                <li
+                  v-for="(todo, index) in sessionForm.todos"
+                  :key="todo.id"
+                  class="flex items-center gap-2 rounded-md border border-border px-2 py-1.5"
+                >
+                  <Checkbox v-model="todo.done" :disabled="isArchived" />
+                  <span
+                    class="min-w-0 flex-1 text-sm"
+                    :class="todo.done ? 'text-muted-foreground line-through' : ''"
+                  >
+                    {{ todo.content }}
+                  </span>
+                  <span
+                    v-if="todo.requirementId"
+                    class="shrink-0 rounded-full bg-emerald-100 px-2 py-0.5 text-[0.7rem] font-medium text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-300"
+                  >
+                    已生成 {{ requirementCode(todo.requirementId) || "开发需求" }}
+                  </span>
+                  <Button
+                    v-else
+                    variant="ghost"
+                    size="xs"
+                    :disabled="isArchived"
+                    @click="openRequirementDialog(todo)"
+                  >
+                    生成需求
+                  </Button>
+                  <Button
+                    v-if="!isArchived"
+                    variant="ghost"
+                    size="icon-xs"
+                    class="text-muted-foreground hover:text-destructive"
+                    aria-label="删除待办"
+                    @click="removeTodo(index)"
+                  >
+                    <Trash2 class="size-3.5" />
+                  </Button>
+                </li>
+              </ul>
+              <div v-if="!isArchived" class="mt-2 flex gap-2">
+                <Input
+                  v-model="todoDraft"
+                  placeholder="新增一条待办，例如：周五前给出报价"
+                  @keyup.enter="addTodo"
+                />
+                <Button
+                  variant="outline"
+                  size="sm"
+                  :disabled="!todoDraft.trim()"
+                  @click="addTodo"
+                >
+                  添加
+                </Button>
+              </div>
+            </div>
+
             <div class="border-t border-border pt-4">
               <div class="flex flex-wrap items-center justify-between gap-2">
                 <div>
                   <h3 class="text-sm font-semibold">本场附件</h3>
                   <p class="mt-0.5 text-xs text-muted-foreground">
-                    支持多选、Ctrl+V 粘贴截图和拖拽文件。
+                    支持录音、多选、Ctrl+V 粘贴截图和拖拽文件。
                   </p>
                 </div>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  :disabled="uploading > 0 || isArchived"
-                  @click="uploadSelected(activeSessionId)"
-                >
-                  <Upload class="size-4" />
-                  上传附件
-                </Button>
+                <div class="flex flex-wrap items-center gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    :class="recording ? 'text-destructive' : ''"
+                    :disabled="uploading > 0 || isArchived"
+                    @click="
+                      recording
+                        ? stopRecording()
+                        : startRecording(activeSessionId)
+                    "
+                  >
+                    <Square v-if="recording" class="size-4" />
+                    <Mic v-else class="size-4" />
+                    {{ recording ? `停止录音 ${recordElapsed}` : "录音" }}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    :disabled="uploading > 0 || isArchived"
+                    @click="uploadSelected(activeSessionId)"
+                  >
+                    <Upload class="size-4" />
+                    上传附件
+                  </Button>
+                </div>
               </div>
               <AttachmentGrid
                 :attachments="activeSessionAttachments"
@@ -1047,6 +1320,16 @@ async function confirmRemoveAttachment() {
         @confirm="confirmArchive"
       />
 
+      <ConfirmDialog
+        :open="completeConfirmOpen"
+        title="关联原始需求尚未细化"
+        :message="completeWarning"
+        confirm-label="仍然完成"
+        :busy="completeBusy"
+        @close="completeConfirmOpen = false"
+        @confirm="confirmCompleteRecord"
+      />
+
       <AppDialog
         :open="Boolean(previewAttachment)"
         :title="previewAttachment?.fileName ?? '附件预览'"
@@ -1073,6 +1356,8 @@ async function confirmRemoveAttachment() {
         :project="project"
         preset-origin="communication"
         :preset-origin-communication-id="communicationId"
+        :preset-title="requirementPresetTitle"
+        :preset-source-requirement-ids="requirementPresetSourceIds"
         @close="requirementOpen = false"
         @saved="afterRequirementCreated"
       />
